@@ -185,13 +185,21 @@ async fn handle_server_connection(
     }
 }
 
-async fn broadcast(state: Arc<P2PWebsocketNetwork>, tx: UnboundedSender<P2PInnerMessage>) {
+async fn broadcast(
+    state: Arc<P2PWebsocketNetwork>,
+    tx: UnboundedSender<P2PInnerMessage>,
+    bind: String,
+) {
     // broadcast to connected clients
     let list = state.addresses.lock().unwrap();
+
     for (i, cl) in list.iter().enumerate() {
         println!("Broadcasting to {} ", cl.0);
         if let Err(e) = cl.1.send(P2PInnerMessage {
-            message: tungstenite::protocol::Message::text(format!("Message to client {}", i)),
+            message: tungstenite::protocol::Message::text(format!(
+                "Message to client {} from {}",
+                i, bind
+            )),
             tx_handler: tx.clone(),
         }) {
             println!("Failed to send broadcast message: {:?}", e);
@@ -216,7 +224,6 @@ async fn main() {
             println!("could not connect to server: {url}");
         }
     }
-
     let listener = TcpListener::bind(&args.bind).await.expect("Failed to bind");
 
     loop {
@@ -226,18 +233,18 @@ async fn main() {
             }
             Some(msg) = rx.recv() => {
                 println!("3: {msg:?}");
-                // echo back that message to the client for the example
-                msg.tx_handler.send(P2PInnerMessage{
-                    message: msg.message,
-                    tx_handler: tx.clone()
-                }).unwrap();
+                // echo back that message to the client for the example:
+                // msg.tx_handler.send(P2PInnerMessage{
+                //     message: msg.message,
+                //     tx_handler: tx.clone()
+                // }).unwrap();
             }
             _ = tokio::signal::ctrl_c() => {
                 println!("Received Ctrl+C, shutting down...");
                 break
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-                tokio::spawn(broadcast(network_state.clone(), tx.clone()));
+                tokio::spawn(broadcast(network_state.clone(), tx.clone(), args.bind.clone()));
             }
         }
     }
