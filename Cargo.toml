@@ -1,0 +1,11 @@
+[package]
+name = "wsactixcl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.13", features = ["derive"] }
+futures = "0.3.30"
+serde = "1.0.204"
+tokio = { version = "1.39.2", features = ["full"] }
+tokio-tungstenite = "0.23.1"
