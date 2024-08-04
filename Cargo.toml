@@ -11,3 +11,4 @@ log = "0.4.22"
 serde = "1.0.204"
 tokio = { version = "1.39.2", features = ["full"] }
 tokio-tungstenite = "0.23.1"
+tokio-util = { version = "0.7.11", features = ["full"] }

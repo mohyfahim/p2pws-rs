@@ -15,6 +15,7 @@ use tokio_tungstenite::{
     tungstenite::{self, protocol::Message},
     MaybeTlsStream, WebSocketStream,
 };
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -78,7 +79,11 @@ impl WebSocketActor {
     }
 }
 
-async fn handle_connection(state: Arc<P2PWebsocketNetwork>, conn: WebSocketActor) {
+async fn handle_connection(
+    state: Arc<P2PWebsocketNetwork>,
+    conn: WebSocketActor,
+    token: CancellationToken,
+) {
     // extract socket address as the key for clients list
     let addr = match conn.ws_stream.get_ref() {
         MaybeTlsStream::Plain(f) => f.peer_addr().unwrap(),
@@ -98,7 +103,7 @@ async fn handle_connection(state: Arc<P2PWebsocketNetwork>, conn: WebSocketActor
     loop {
         tokio::select! {
             Some(msg) = ws_rx.next() => {
-                log::debug!("1 Received: {:?}", msg);
+                log::debug!("Received: {:?}", msg);
                 match msg {
                     Ok(msg) => {
                         if let Err(e) = state.master.lock().unwrap().send(P2PInnerMessage {
@@ -115,10 +120,14 @@ async fn handle_connection(state: Arc<P2PWebsocketNetwork>, conn: WebSocketActor
                 }
             }
             Some(msg) = rx.recv() => {
-                log::debug!("2 Sending: {:?}", msg);
+                log::debug!("Sending: {:?}", msg);
                 if let Err(e) = ws_tx.send(msg.message).await {
                     log::error!("Failed to send message on socket: {:?}", e);
                 }
+            }
+            _ = token.cancelled() => {
+                log::warn!("task cancelled");
+                break
             }
         }
     }
@@ -133,6 +142,7 @@ async fn handle_server_connection(
     state: Arc<P2PWebsocketNetwork>,
     raw_stream: TcpStream,
     addr: SocketAddr,
+    token: CancellationToken,
 ) {
     let (tx, mut rx) = unbounded_channel::<P2PInnerMessage>();
     {
@@ -156,7 +166,7 @@ async fn handle_server_connection(
     loop {
         tokio::select! {
             Some(msg) = ws_rx.next() => {
-                log::debug!("4 Received: {:?}", msg);
+                log::debug!("Received: {:?}", msg);
                 match msg {
                     Ok(msg) => {
                         if let Err(e) = state.master.lock().unwrap().send(P2PInnerMessage {
@@ -173,10 +183,14 @@ async fn handle_server_connection(
                 }
             }
             Some(msg) = rx.recv() => {
-                log::debug!("5: {msg:?}");
+                log::debug!("Sending: {:?}", msg);
                 if let Err(e) = ws_tx.send(msg.message).await {
                     log::error!("Failed to send message on socket: {:?}", e);
                 }
+            }
+            _ = token.cancelled() => {
+                log::warn!("task cancelled");
+                break
             }
         }
     }
@@ -215,6 +229,8 @@ async fn broadcast(
 async fn main() {
     let args = Args::parse();
     env_logger::init();
+    let cancelation_token = CancellationToken::new();
+    let tracker = TaskTracker::new();
     let (tx, mut rx) = unbounded_channel::<P2PInnerMessage>();
     let network_state: Arc<P2PWebsocketNetwork> = Arc::new(P2PWebsocketNetwork {
         addresses: Arc::new(Mutex::new(HashMap::new())),
@@ -224,7 +240,11 @@ async fn main() {
     for url in &args.clients {
         log::info!("connecting to {} ...", url);
         if let Some(conn) = WebSocketActor::connect(url).await {
-            tokio::spawn(handle_connection(network_state.clone(), conn));
+            tracker.spawn(handle_connection(
+                network_state.clone(),
+                conn,
+                cancelation_token.clone(),
+            ));
         } else {
             log::warn!("could not connect to server: {url}");
         }
@@ -234,10 +254,12 @@ async fn main() {
     loop {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
-                tokio::spawn(handle_server_connection(network_state.clone(), stream, addr));
+                tracker.spawn(handle_server_connection(
+                    network_state.clone(),
+                    stream, addr, cancelation_token.clone()));
             }
             Some(msg) = rx.recv() => {
-                log::debug!("3: {msg:?}");
+                log::debug!("consuming ->{msg:?}");
                 // echo back that message to the client for the example:
                 // msg.tx_handler.send(P2PInnerMessage{
                 //     message: msg.message,
@@ -246,11 +268,16 @@ async fn main() {
             }
             _ = tokio::signal::ctrl_c() => {
                 log::warn!("Received Ctrl+C, shutting down...");
+                tracker.close();
+                cancelation_token.cancel();
                 break
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-                tokio::spawn(broadcast(network_state.clone(), tx.clone(), args.bind.clone()));
+                tracker.spawn(broadcast(network_state.clone(), tx.clone(), args.bind.clone()));
             }
         }
     }
+    log::info!("waiting for all tasks");
+    tracker.wait().await;
+    log::debug!("tasks all are stoped");
 }
