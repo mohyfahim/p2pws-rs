@@ -22,8 +22,8 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// List of client addresses to connect to
-    #[arg(short, long, value_delimiter = ',', value_parser = parse_client)]
-    clients: Vec<String>,
+    #[arg(short, long, value_delimiter = ',', value_parser = parse_peer)]
+    peers: Vec<String>,
 
     /// Address to bind the server
     #[arg(short, long, value_parser = parse_bind)]
@@ -31,7 +31,7 @@ struct Args {
 }
 
 /// Parse and validate client URLs
-fn parse_client(s: &str) -> Result<String, String> {
+fn parse_peer(s: &str) -> Result<String, String> {
     // Validate the URL starts with ws:// or wss://
     if s.starts_with("ws://") {
         let ip_port = &s[5..];
@@ -237,7 +237,7 @@ async fn main() {
         master: Arc::new(Mutex::new(tx.clone())),
     });
 
-    for url in &args.clients {
+    for url in &args.peers {
         log::info!("connecting to {} ...", url);
         if let Some(conn) = WebSocketActor::connect(url).await {
             tracker.spawn(handle_connection(
